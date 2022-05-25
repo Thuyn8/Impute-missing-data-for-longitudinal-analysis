@@ -58,9 +58,7 @@ spineMiss(sixcity_wide[, c("smok", "resp.4") ])
 ```
 The figure on the left shows a histogram of missing data by column in our dataset. When we reshape to wide form, resp4 has 18% missing data, resp3 has about 14% missing data and so on. The completed observations are 61%. The figure on the right show that the pattern of missing data is non-monotone. Some people missed one follow-up but came back to the next follow-ups.
 
-# Q2
-
-A random effects model for respiratory function with only the main effects of smoking status and age using complete dataset sixcity
+## 1. Fitting random effects model for respiratory function with only the main effects of smoking status and age using complete data
 ```{r, echo=FALSE}
 sixcity_comp <- read.csv("sixcity.csv")
 sixcity_comp <- sixcity_comp[, !(colnames(sixcity_comp) %in% c("X", "aXs"))]
@@ -70,10 +68,7 @@ glmm_complete_fit <- glmer(resp ~ age*smok + (1|id),
 summary(glmm_complete_fit) 
 ```
 
-# Q3 :
-
-Using the data with missingness fit a random effects model for respiratory function with only the
-main effects of smoking status and age.
+## 2: Using available data to fit a random effects model for respiratory function with only the main effects of smoking status and age.
 
 ```{r, echo=FALSE}
 glmm_missing_fit <- glmer(resp ~ age*smok + (1|id),  
@@ -82,10 +77,10 @@ glmm_missing_fit <- glmer(resp ~ age*smok + (1|id),
 summary(glmm_missing_fit)
 ```
 
-# Q4 
+ 
 
 
-## a. Imputations using long format
+## 3. Imputations using long format
 ```{r, echo=FALSE}
 
 
@@ -101,7 +96,7 @@ mod_imp_long <- pool(fit.imp_long)
 summary(mod_imp_long, conf.int = T, exponentiate = T)
 ```
 
-## b. Imputations using wide format
+## 4. Imputations using wide format
 
 ```{r, echo=FALSE, warning=FALSE}
 pred_wide <- make.predictorMatrix(sixcity_wide)
@@ -147,17 +142,17 @@ tb
 
 
 
-##: Comparasions:
+## Comparasons:
 
 ```{r, echo=FALSE}
 d2 <- data.frame(
-                complete= c("-3.0848 (0.2320)","-0.1655 (0.0919)","0.5611     (0.2950)","0.1322 (0.1488)"), 
+                complete= c("-3.0848 (0.2320)","-0.1655 (0.0919)","0.5611 (0.2950)","0.1322 (0.1488)"), 
                 imp_long = c("0.05485 (0.20930)","0.84905 (0.08685)", "1.53430 (0.26988)", "1.02131 (0.14014)"), 
                 imp_wide= c("-3.0500 (0.2376)", "-0.1659 (0.0957)", "0.5502  (0.2949)","0.1264 (0.1460)"))
 
 cbind(...=c("Intercept","age","smoke", "age:smoke"),d2)
 ```
-Our result from fitting a random effect model are fairly consistent across three methods, complete data, imputations using data in long format,and wide format, though there are some differences. The complete data model and impuations using wide format model are the most similar in terms of results. The table above shows point estimates for the regression coefficients(standard errors).
+Our result from fitting a random effect model are fairly consistent across three methods, complete data, imputations using data in long format,and wide format, though there are some differences. The complete data model and imputations using wide format model are the most similar in terms of results. The table above shows point estimates for the regression coefficients(standard errors).
 
 
 
