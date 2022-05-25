@@ -1,0 +1,486 @@
+---
+title: "Impute missing data"
+author: "Thuy Nguyen"
+date: "5/25/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, echo=F, warning=FALSE, message=FALSE}
+library(geepack)
+library(reshape2)
+library(tidyverse)
+library(VIM)
+library(nlme)
+library(lme4)
+library(mice)
+library(broom.mixed)
+library(ggplot2)
+```
+# Explore the missingness
+
+```{r, echo= FALSE}
+sixcity <- read.csv("miss-sixcity.csv")
+sixcity <- sixcity[, !(colnames(sixcity) %in% c("X"))]
+summary(sixcity)
+```
+
+Above is the summary of the data sixcity.Only resp column has 229 missning data.
+
+```{r, echo=FALSE}
+sixcity %>% group_by(time, smok) %>% summarise(N = n(),n_missing = sum(is.na(resp)), percent_missing = round(n_missing/N,3))
+```
+
+Above is the proportion of missing data by smoke and time visit
+```{r, echo=FALSE}
+(sixcity
+ %>% group_by(smok,id) %>% summarise(nvisit = sum(!is.na(resp)))) %>% group_by(smok, nvisit) %>% summarise(N = n())
+
+```
+The table above shows the total of times people showing up and total of people in each categorical time by smoke status.
+
+```{r, echo=FALSE}
+
+
+sixcity_wide <- reshape(sixcity[, !(colnames(sixcity)%in% c("age"))], direction = "wide", idvar = c("id", "smok"), ids = "time")
+
+aggr(sixcity_wide, ylabs = c("Histogram of missing data", "pattern"),sortVars = T, numbers= T, gap =3)
+par(mfrow = c(2,2))
+spineMiss(sixcity_wide[, c("smok", "resp.1") ])
+spineMiss(sixcity_wide[, c("smok", "resp.2") ])
+spineMiss(sixcity_wide[, c("smok", "resp.3") ])
+spineMiss(sixcity_wide[, c("smok", "resp.4") ])
+
+```
+The figure on the left shows a histogram of missing data by column in our dataset. When we reshape to wide form, resp4 has 18% missing data, resp3 has about 14% missing data and so on. The completed observations are 61%. The figure on the right show that the pattern of missing data is non-monotone. Some people missed one follow-up but came back to the next follow-ups.
+
+# Q2
+
+A random effects model for respiratory function with only the main effects of smoking status and age using complete dataset sixcity
+```{r, echo=FALSE}
+sixcity_comp <- read.csv("sixcity.csv")
+sixcity_comp <- sixcity_comp[, !(colnames(sixcity_comp) %in% c("X", "aXs"))]
+glmm_complete_fit <- glmer(resp ~ age*smok + (1|id),  
+                  data=sixcity_comp, family=binomial(link="logit"),  
+                  nAGQ=20)
+summary(glmm_complete_fit) 
+```
+
+# Q3 :
+
+Using the data with missingness fit a random effects model for respiratory function with only the
+main effects of smoking status and age.
+
+```{r, echo=FALSE}
+glmm_missing_fit <- glmer(resp ~ age*smok + (1|id),  
+                  data=sixcity, family=binomial(link="logit"),  
+                  nAGQ=20)
+summary(glmm_missing_fit)
+```
+
+# Q4 
+
+
+## a. Imputations using long format
+```{r, echo=FALSE}
+
+
+pred <- make.predictorMatrix(sixcity)
+pred["resp", "id"] <- -2
+imp_long <- mice(sixcity, method = "2l.bin", pred= pred, seed =5, maxit = 1, m = 20, print = F)
+
+
+fit.imp_long <- with(imp_long, glmer(resp ~ age*as.factor(smok) + (1|id),  
+                  family=binomial(link="logit"),  
+                  nAGQ=20))
+mod_imp_long <- pool(fit.imp_long)
+summary(mod_imp_long, conf.int = T, exponentiate = T)
+```
+
+## b. Imputations using wide format
+
+```{r, echo=FALSE, warning=FALSE}
+pred_wide <- make.predictorMatrix(sixcity_wide)
+pred_wide[,"id"] <- 0
+imp_wide <- mice(sixcity_wide, m =20, maxit = 50, method = "logreg", seed = 5,  print= F, pred= pred_wide)
+
+```
+
+
+Fit glmer model to each completed dataset and pool the result
+```{r, echo=FALSE}
+age <- c(-2,-1,0,1)
+
+fitmodel <- function(i, tempData){ 
+  
+  aux.long <- reshape(complete(imp_wide,i),  
+                      idvar= "id", 
+                      varying= list(seq(3,6)), 
+                      v.names=c("y"), 
+                      direction="long") 
+  ## Arrange data by ID and time 
+  #aux.long <- arrange(aux.long, ID, time) 
+   
+  ## Getting the time right 
+  aux.long$age <- age[aux.long$time] 
+   
+  ## Fit GEE model (working independence) 
+  fit <- glmer(y ~ age*as.factor(smok) + (1|id),  
+                  data=aux.long, family=binomial(link="logit"),  
+                  nAGQ=20) 
+  
+  return(c('coef'=fixef(fit), 'var'=diag(vcov(fit)), df = df.residual(fit)))
+} 
+ 
+v <- sapply(1:20, FUN=fitmodel, imp_wide) # 1:m  
+source("poolmi.R") 
+pooled.estimates <- apply(v[1:4,],1,mean) 
+pooled.se <- multipleImputationStandardErrors(v[1:4,], v[5:8,]) 
+pooled.pv <- pnorm(-abs(pooled.estimates/pooled.se))*2 
+tb <- cbind(pooled.estimates, pooled.se, pooled.pv) 
+tb
+```
+
+
+
+##: Comparasions:
+
+```{r, echo=FALSE}
+d2 <- data.frame(
+                complete= c("-3.0848 (0.2320)","-0.1655 (0.0919)","0.5611     (0.2950)","0.1322 (0.1488)"), 
+                imp_long = c("0.05485 (0.20930)","0.84905 (0.08685)", "1.53430 (0.26988)", "1.02131 (0.14014)"), 
+                imp_wide= c("-3.0500 (0.2376)", "-0.1659 (0.0957)", "0.5502  (0.2949)","0.1264 (0.1460)"))
+
+cbind(...=c("Intercept","age","smoke", "age:smoke"),d2)
+```
+Our result from fitting a random effect model are fairly consistent across three methods, complete data, imputations using data in long format,and wide format, though there are some differences. The complete data model and impuations using wide format model are the most similar in terms of results. The table above shows point estimates for the regression coefficients(standard errors).
+
+
+
+# Part B: IMPS Data
+## Q1: An Exploratory data
+
+```{r, echo=FALSE}
+library(wgeesel)
+data(imps)
+imps$Week <- as.integer(imps$Week)
+imps$Drug <- as.factor(ifelse(imps$Drug== 1, "Treatment", "placebo"))
+imps$Sex <- as.factor(ifelse(imps$Sex == 1, "Male", "Female"))
+by(imps, INDICES = imps$Drug, summary)
+
+```
+
+```{r, echo=FALSE}
+imps %>% group_by(Time, Drug) %>% summarise(n_missing = sum(is.na(IMPS79)), percent_missing = round(n_missing/n(), 3))
+```
+
+
+```{r, echo=FALSE}
+(imps %>% group_by(ID, Drug) %>% summarise(ntime= sum(!is.na(IMPS79)))) %>% group_by(Drug, ntime) %>% summarise(N = n())
+```
+
+
+```{r, echo= FALSE,warning=FALSE}
+id.miss <- unique(imps$ID[is.na(imps$Y)])
+imps$missing <- "Complete"
+imps$missing[imps$ID %in% id.miss] <- "Missing"
+
+
+imps_wide <- reshape(imps %>% select(c("ID", "Sex", "Drug", "IMPS79", "Week")), direction = "wide", idvar = c("ID", "Sex", "Drug") , v.names = "IMPS79", timevar = "Week")
+
+aggr(imps_wide, ylabs = c("Histogram of missing data", "Pattern"), numbers = T, sortVars = T)
+```
+
+
+Comments:
+
+At week 6, there 20% of the responses are missing, while they are 9% at week 3. The completed observations are 80%. The missing pattern is monotonic. 
+
+## Q2: Marginal model
+
+```{r, echo=FALSE}
+library(geepack)
+mod4 <- geeglm(Y~ Time * Drug + Sex, family =binomial(link = "logit"),id = ID, data = imps)
+summary(mod4)
+```
+
+
+
+## Q3: Marginal model with IPW GEE
+
+a. Missingness depends on time and treatment
+
+```{r, echo=FALSE}
+library(wgeesel)
+
+imps$lag1y <- ylag(imps$ID, imps$Y, 1)
+
+mod_ipw <- wgee(model = Y~ Time * Drug +Sex, data = imps, id = imps$ID, family = "binomial", corstr = "independence", scale = NULL, mismodel = R~ Time + Drug)
+summary(mod_ipw)
+
+```
+b. Missingness depends on time, treatment, sex, and most recent previous outcome
+
+```{r, echo=FALSE}
+
+
+mod_ipw2 <- wgee(model = Y~ Time* Drug + Sex, data = imps, id = imps$ID, family = "binomial", corstr = "independence", scale = NULL, mismodel = R~ Time + Drug +lag1y)
+summary(mod_ipw2)
+
+```
+### Comparisons:
+
+```{r, echo=FALSE}
+d <- data.frame(
+                GEE = c("3.019 (0.396)","-1.086 (0.203)","-0.234 (0.425)","0.115 (0.180)",'-0.336 (0.224)'), 
+                IPW1 = c("3.034 (0.397)","-1.095 (0.202)", "-0.260 (0.427)", "0.109 (0.180)","-0.317 (0.223)"), 
+                IPW2= c("3.072 (0.399)", "-1.143 (0.204)", "-0.276 (0.428)","0.106 (0.181)","-0.294 (0.225)"))
+
+cbind(...=c("Intercept","Time","Treatment", "Male", "Time:Treatment"),d)
+```
+
+Our result from fitting a marginal model are fairly consistent across available data, IPW with different missigness models, though there are some differences. The two IPW Gee  models with different missignness models are the most similar in terms of results. The table above shows point estimates for the regression coefficients(standard errors).
+
+
+*Conclusion:*
+```{r, echo = FALSE,warning=F, message=F}
+lambda1 <- c(0,0,1,0,0)
+lambda2 <- c(0,0,1,0,1)
+exp(lambda1 %*% mod_ipw2$beta)-1
+exp(lambda1 %*% mod_ipw2$beta + qnorm(c(0.025,0.975)) *c(sqrt(lambda1%*% mod_ipw2$var %*%lambda1)))-1
+exp(lambda2 %*% mod_ipw2$beta)-1
+exp(lambda2 %*% mod_ipw2$beta + qnorm(c(0.025,0.975)) *c(sqrt(lambda2%*% mod_ipw2$var %*%lambda2)))-1
+```
+
+Using IPW GEE model with Missingness depends on time, treatment, sex, and most recent previous outcome, we conclude that:  the odds of severe schizophrenia disorder of the treatment group is 24%% lower (95% CI:67% lower to 76% higher) compared to people in the placebo group, holding Sex, time constant. The obtained p-value = 52%, we do not have evidence of that the ratio of odds of severe schizophrenia disorder differs between the placebo and the treatment group 
+
+Among those assigned to treatment, the odds of severe schizophrenia disorder is 43.5% lower (95% CI:66%  lower to 5% lower) per one unit of time. We do not have sufficient evidence of that the ratio of odds of severe schizophrenia disorder over time differs between the two groups (p= 0.19).
+
+
+# Code:
+
+```{r, eval=FALSE}
+library(geepack)
+library(reshape2)
+library(tidyverse)
+library(VIM)
+library(nlme)
+library(lme4)
+library(mice)
+library(broom.mixed)
+library(ggplot2)
+
+sixcity <- read.csv("miss-sixcity.csv")
+sixcity <- sixcity[, !(colnames(sixcity) %in% c("X"))]
+summary(sixcity)
+
+sixcity %>% group_by(time, smok) %>% 
+            summarise(N = n(),n_missing = sum(is.na(resp)), 
+                      percent_missing = round(n_missing/N,3))
+
+(sixcity%>% group_by(smok,id) %>% 
+            summarise(nvisit = sum(!is.na(resp)))) %>% 
+            group_by(smok, nvisit) %>% summarise(N = n())
+
+
+sixcity_wide <- reshape(sixcity[, !(colnames(sixcity)%in% c("age"))], 
+                        direction = "wide", idvar = c("id", "smok"), 
+                        ids = "time")
+
+aggr(sixcity_wide, ylabs = c("Histogram of missing data", "pattern"),
+     sortVars = T, numbers= T)
+par(mfrow = c(2,2))
+
+spineMiss(sixcity_wide[, c("smok", "resp.1") ])
+spineMiss(sixcity_wide[, c("smok", "resp.2") ])
+spineMiss(sixcity_wide[, c("smok", "resp.3") ])
+spineMiss(sixcity_wide[, c("smok", "resp.4") ])
+
+sixcity_comp <- read.csv("sixcity.csv")
+sixcity_comp <- sixcity_comp[, !(colnames(sixcity_comp) %in% c("X", "aXs"))]
+glmm_complete_fit <- glmer(resp ~ age*smok + (1|id),  
+                            data=sixcity_comp, family=binomial(link="logit"),  
+                            nAGQ=20)
+summary(glmm_complete_fit) 
+
+glmm_missing_fit <- glmer(resp ~ age*smok + (1|id),  
+                          data=sixcity, family=binomial(link="logit"),  
+                          nAGQ=20)
+summary(glmm_missing_fit)
+
+pred <- make.predictorMatrix(sixcity)
+pred["resp", "id"] <- -2
+imp_long <- mice(sixcity, method = "2l.bin", 
+                 pred= pred, seed =5, maxit = 1, m = 20, print = F)
+
+
+fit.imp_long <- with(imp_long, glmer(resp ~ age*as.factor(smok) + (1|id),  
+                  family=binomial(link="logit"),  
+                  nAGQ=20))
+mod_imp_long <- pool(fit.imp_long)
+summary(mod_imp_long, conf.int = T, exponentiate = T)
+
+pred_wide <- make.predictorMatrix(sixcity_wide)
+pred_wide[,"id"] <- 0
+imp_wide <- mice(sixcity_wide, m =20, maxit = 50, 
+                 method = "logreg", seed = 5,  print= F, pred= pred_wide)
+
+age <- c(-2,-1,0,1)
+
+fitmodel <- function(i, tempData){ 
+  
+  aux.long <- reshape(complete(imp_wide,i),  
+                      idvar= "id", 
+                      varying= list(seq(3,6)), 
+                      v.names=c("y"), 
+                      direction="long") 
+  ## Arrange data by ID and time 
+  #aux.long <- arrange(aux.long, ID, time) 
+   
+  ## Getting the time right 
+  aux.long$age <- age[aux.long$time] 
+   
+  ## Fit GEE model (working independence) 
+  fit <- glmer(y ~ age*as.factor(smok) + (1|id),  
+                  data=aux.long, family=binomial(link="logit"),  
+                  nAGQ=20) 
+  
+  return(c('coef'=fixef(fit), 'var'=diag(vcov(fit)), df = df.residual(fit)))
+} 
+ 
+v <- sapply(1:20, FUN=fitmodel, imp_wide) # 1:m  
+source("poolmi.R") 
+pooled.estimates <- apply(v[1:4,],1,mean) 
+pooled.se <- multipleImputationStandardErrors(v[1:4,], v[5:8,]) 
+pooled.pv <- pnorm(-abs(pooled.estimates/pooled.se))*2 
+tb <- cbind(pooled.estimates, pooled.se, pooled.pv) 
+tb
+
+d2 <- data.frame(
+                complete= c("-3.0848 (0.2320)","-0.1655 (0.0919)","0.5611 (0.2950)","0.1322 (0.1488)"), 
+                imp_long = c("0.05485 (0.20930)","0.84905 (0.08685)", "1.53430 (0.26988)", "1.02131 (0.14014)"), 
+                imp_wide= c("-3.0500 (0.2376)", "-0.1659 (0.0957)", "0.5502  (0.2949)","0.1264 (0.1460)"))
+
+cbind(...=c("Intercept","age","smoke", "age:smoke"),d2)
+
+# Part B
+library(wgeesel)
+data(imps)
+imps$Week <- as.integer(imps$Week)
+imps$Drug <- as.factor(ifelse(imps$Drug== 1, "Treatment", "placebo"))
+imps$Sex <- as.factor(ifelse(imps$Sex == 1, "Male", "Female"))
+by(imps, INDICES = imps$Drug, summary)
+
+
+
+
+imps %>% group_by(Time, Drug) %>% summarise(n_missing = sum(is.na(IMPS79)),
+                                            percent_missing = round(n_missing/n(), 3))
+
+
+
+(imps %>% group_by(ID, Drug) %>% summarise(ntime= sum(!is.na(IMPS79)))) %>% 
+          group_by(Drug, ntime) %>% summarise(N = n())
+
+
+
+id.miss <- unique(imps$ID[is.na(imps$Y)])
+imps$missing <- "Complete"
+imps$missing[imps$ID %in% id.miss] <- "Missing"
+
+par(mfrow = c(2,2))
+ggplot(imps, aes(x =IMPS79,fill = missing))+geom_density(alpha= 0.25)+ 
+        facet_grid(.~Drug)+theme(legend.position="bottom") +  
+        theme_classic(base_size = 14) + 
+        theme(legend.position="bottom", 
+        axis.text.x = element_text(angle = 45))
+ggplot(imps, aes(x =IMPS79,fill = missing))+geom_density(alpha= 0.25)+ facet_grid(.~Sex)+
+        theme(legend.position="bottom") +  
+        theme_classic(base_size = 14) + 
+        theme(legend.position="bottom", 
+        axis.text.x = element_text(angle = 45))
+ggplot(imps, aes(x =IMPS79,fill = missing))+geom_density(alpha= 0.25)+ 
+        facet_grid(.~Week)+theme(legend.position="bottom") +  
+        theme_classic(base_size = 14) + 
+        theme(legend.position="bottom", 
+        axis.text.x = element_text(angle = 45))
+
+ggplot(imps, aes(x =IMPS79,fill = missing))+geom_density(alpha= 0.25)+
+        facet_grid(.~Sex+ Drug)+theme(legend.position="bottom") +  
+        theme_classic(base_size = 14) + 
+        theme(legend.position="bottom", 
+        axis.text.x = element_text(angle = 45))
+
+ggplot(imps, aes(x =IMPS79,fill = missing))+geom_density(alpha= 0.25)+ 
+        facet_grid(.~Week +Drug)+theme(legend.position="bottom") +  
+        theme_classic(base_size = 14) + 
+        theme(legend.position="bottom", 
+        axis.text.x = element_text(angle = 45))
+
+
+imps_wide <- reshape(imps %>% select(c("ID", "Sex", "Drug", "IMPS79", "Week")), 
+                     direction = "wide", idvar = c("ID", "Sex", "Drug") , v.names = "IMPS79", timevar = "Week")
+
+ aggr(imps_wide, ylabs = c("Histogram of missing data", "Pattern"), 
+      numbers = T, sortVars = T)
+
+
+
+## Q2: Marginal model
+
+library(geepack)
+mod4 <- geeglm(Y~ Time * Drug + Sex, family =binomial(link = "logit"),id = ID, data = imps)
+summary(mod4)
+
+
+
+
+## Q3: Marginal model with IPW GEE
+
+### a. Missingness depends on time and treatment
+
+library(wgeesel)
+
+imps$lag1y <- ylag(imps$ID, imps$Y, 1)
+
+mod_ipw <- wgee(model = Y~ Time * Drug +Sex, data = imps, 
+                id = imps$ID, family = "binomial", corstr = "independence", 
+                scale = NULL, mismodel = R~ Time + Drug)
+summary(mod_ipw)
+
+
+### b. Missingness depends on time, treatment, sex, and most recent previous outcome
+
+
+
+
+mod_ipw2 <- wgee(model = Y~ Time* Drug + Sex,
+                 data = imps, 
+                 id = imps$ID, family = "binomial",
+                 corstr = "independence", 
+                 scale = NULL, 
+                 mismodel = R~ Time + Drug +lag1y)
+summary(mod_ipw2)
+
+### Comparisons:
+
+
+d <- data.frame(
+                GEE = c("3.019 (0.396)","-1.086 (0.203)","-0.234 (0.425)","0.115 (0.180)",'-0.336 (0.224)'), 
+                IPW1 = c("3.034 (0.397)","-1.095 (0.202)", "-0.260 (0.427)", "0.109 (0.180)","-0.317 (0.223)"), 
+                IPW2= c("3.072 (0.399)", "-1.143 (0.204)", "-0.276 (0.428)","0.106 (0.181)","-0.294 (0.225)"))
+
+cbind(...=c("Intercept","Time","Treatment", "Male", "Time:Treatment"),d)
+
+lambda1 <- c(0,0,1,0,0)
+lambda2 <- c(0,0,1,0,1)
+exp(lambda1 %*% mod_ipw2$beta)-1
+exp(lambda1 %*% mod_ipw2$beta + qnorm(c(0.025,0.975)) *c(sqrt(lambda1%*% mod_ipw2$var %*%lambda1)))-1
+exp(lambda2 %*% mod_ipw2$beta)-1
+exp(lambda2 %*% mod_ipw2$beta + qnorm(c(0.025,0.975)) *c(sqrt(lambda2%*% mod_ipw2$var %*%lambda2)))-1
+```
+
